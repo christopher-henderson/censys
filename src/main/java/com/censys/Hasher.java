@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.channels.Channels;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.LinkedBlockingDeque;
 import org.apache.beam.sdk.io.FileIO;
 import org.apache.beam.sdk.transforms.SimpleFunction;
@@ -45,7 +46,7 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
     public KV<String, String> apply(FileIO.ReadableFile file) {
         try (InputStream stream = Channels.newInputStream(file.open())) {
             return KV.of(file.getMetadata().resourceId().toString(), this.hash(stream));
-        } catch (Exception e) {
+        } catch (IOException e) {
             // Just flipping through some of the docs for Beam I can see that there is
             // a notion of transient errors (say, network down) that you can configure
             // your pipeline to notice and thus act upon in a retry strategy (I reckon
@@ -72,6 +73,16 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
         }
     }
 
+    // Abstracting out the core procedure is very important for unit testing. Having
+    // one layer ("apply" in this case) that accepts integration with Beam's classes
+    // and converts it into the far more general InputStream type lets you properly unit
+    // test (rather than integration test).
+    //
+    // That is, decoupling hashing from Beam's FileIO classes greatly improves in-memory
+    // unit testing without having to resort to relying on Beam's classes being easily
+    // mockable or instantiable (which...a great deal of Beam appears to be relying on
+    // factories and private constructors which can either be awesome or awful for unit
+    // testing depending on how well it was implemented).
     public String hash(InputStream stream) throws IOException {
         MessageDigest digest = this.getDigest();
         byte[] buf = this.getBuffer();
@@ -86,12 +97,14 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
     }
 
     private MessageDigest getDigest() {
-        // This can technically fail, although I would say
-        // that SHA256 not being available to us surely counts
-        // as a fatal runtime exception.
+        // This would be prime for a dependency injection
+        // if you wanted to make this algorithm configurable.
         try {
             return MessageDigest.getInstance("SHA-256");
-        } catch (Exception e) {
+        } catch (NoSuchAlgorithmException e) {
+            // This can technically fail, although I would say
+            // that SHA256 not being available to us surely counts
+            // as a fatal runtime exception.
             throw new RuntimeException(e);
         }
     }
@@ -99,7 +112,10 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
     private byte[] getBuffer() {
         try {
             return buffers.takeFirst();
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
+            // I'm not entirely sure what
+            // would be reasonable here
+            // other than to just go down.
             throw new RuntimeException(e);
         }
     }
@@ -107,7 +123,10 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
     private void returnBuffer(byte[] buf) {
         try {
             buffers.putLast(buf);
-        } catch (Exception e) {
+        } catch (InterruptedException e) {
+            // I'm not entirely sure what
+            // would be reasonable here
+            // other than to just go down.
             throw new RuntimeException(e);
         }
     }
