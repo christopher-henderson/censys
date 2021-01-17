@@ -13,12 +13,30 @@ import org.apache.beam.vendor.grpc.v1p26p0.org.bouncycastle.util.encoders.Hex;
 
 public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, String>> {
 
-    // https://beam.apache.org/documentation/runners/direct/
-    private static final LinkedBlockingDeque<byte[]> buffers = new LinkedBlockingDeque();
+    // Thread safe queue that I'm using a lot like you would use channels in Go.
+    private final LinkedBlockingDeque<byte[]> buffers = new LinkedBlockingDeque<>();
 
-    static {
-        // This might be worth discussing
-        for (int i = 0; i < Math.max(Runtime.getRuntime().availableProcessors(), 3); i++) {
+    public Hasher() {
+        this(Math.max(Runtime.getRuntime().availableProcessors(), 3));
+    }
+
+    public Hasher(int numBuffers) {
+        // So between the IO and the message digest we're going to need some
+        // intermediate buffers handy. You COULD allocate a new buffer per file,
+        // however that incurs an unnecessary number of heap allocations and
+        // possibly leads to issues such as head fragmentation (especially if
+        // what we are consuming a A LOT of small files).
+        //
+        // Instead, I found the below documentation that stated that the DirectRunner
+        // defaults to the larger of two values (MAX(numCores, 3)) for the number of
+        // threads of execution. If we have, say, eight threads then we can keep a
+        // pool of eight pre-allocated buffers around.
+        //
+        // https://beam.apache.org/documentation/runners/direct/
+        for (int i = 0; i < numBuffers; i++) {
+            // A MB seemed fair for this exercise. However, there are a lot of
+            // heuristics you can do for this depending on what exactly you're
+            // consuming and from where.
             buffers.push(new byte[1024 * 1024]);
         }
     }
@@ -48,7 +66,8 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
             // I gotta say, this API isn't the most satisfying take on streams and functional
             // pipelines that I have ever. But it looks like it's handling a pipeline that
             // is distributed over a network, so I guess you take what you can get because
-            // that cannot be an easy problem to solve.s
+            // that cannot be an easy problem to solve.
+            System.out.println(e.getMessage());
             return null;
         }
     }
@@ -67,6 +86,9 @@ public class Hasher extends SimpleFunction<FileIO.ReadableFile, KV<String, Strin
     }
 
     private MessageDigest getDigest() {
+        // This can technically fail, although I would say
+        // that SHA256 not being available to us surely counts
+        // as a fatal runtime exception.
         try {
             return MessageDigest.getInstance("SHA-256");
         } catch (Exception e) {
