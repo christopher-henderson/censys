@@ -35,12 +35,19 @@ public class FileHasher {
                 PipelineOptionsFactory.fromArgs(args).withValidation().as(HasherOptions.class);
         Pipeline pipeline = Pipeline.create(options);
         pipeline.apply(FileIO.match().filepattern(options.getInput()))
+                // Map pattern to files.
                 .apply(FileIO.readMatches())
+                // Map files to <Fname, Hash> pairs.
                 .apply(MapElements.via(new Hasher()))
+                // Filter out nulls caused by errors.
                 .apply(Filter.by(Objects::nonNull))
+                // Reduce all of the KVs into a single map.
                 .apply(Combine.globally(new Reducer()))
+                // Map that...map...into a JSON string.
                 .apply(MapElements.via(new Serializer()))
+                // Write it to disk.
                 .apply(TextIO.write().to(options.getOutput()));
+                // Pop champagne.
         pipeline.run().waitUntilFinish();
     }
 }
